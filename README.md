@@ -23,3 +23,7 @@ You can add your own datasets as long as they follow this structure.
 * **loglik_ models_ missing_normalize.py**: In this file, the different likelihood models for the different types of variables considered (real, positive, count, categorical and ordinal) are included.
 * **model_ HIVAE_inputDropout.py**: Contains the HI-VAE with input dropout encoder model.
 * **model_ HIVAE_factorized.py**: Contains the HI-VAE with factorized encoder model
+
+## Contact
+
+**Alfredo Nazabal**: anazabal@turing.ac.uk
