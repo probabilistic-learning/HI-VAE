@@ -29,7 +29,7 @@ def encoder(X_list, miss_list, batch_size, z_dim, s_dim, tau):
     return samples, q_params
         
 
-def decoder(batch_data_list, miss_list, types_list, samples, q_params, normalization_params, batch_size, z_dim, y_dim, y_dim_partition):
+def decoder(batch_data_list, miss_list, types_list, samples, q_params, normalization_params, batch_size, z_dim, y_dim, y_dim_partition, tau2):
     
     p_params = dict()
     
@@ -43,10 +43,11 @@ def decoder(batch_data_list, miss_list, types_list, samples, q_params, normaliza
     grouped_samples_y = VAE_functions.y_partition(samples['y'], types_list, y_dim_partition)
 
     #Compute the parameters h_y
-    theta = VAE_functions.theta_estimation_from_y(grouped_samples_y, types_list, miss_list, batch_size, reuse=None)
+#    theta = VAE_functions.theta_estimation_from_y(grouped_samples_y, types_list, miss_list, batch_size, reuse=None)
+    theta = VAE_functions.theta_estimation_from_ys(grouped_samples_y, samples['s'], types_list, miss_list, batch_size, reuse=None)
     
     #Compute loglik and output of the VAE
-    log_p_x, log_p_x_missing, samples['x'], p_params['x'] = VAE_functions.loglik_evaluation(batch_data_list, types_list, miss_list, theta, normalization_params, reuse=None)
+    log_p_x, log_p_x_missing, samples['x'], p_params['x'] = VAE_functions.loglik_evaluation(batch_data_list, types_list, miss_list, theta, tau2, normalization_params, reuse=None)
         
     return theta, samples, p_params, log_p_x, log_p_x_missing
 
@@ -70,7 +71,8 @@ def cost_function(log_p_x, p_params, q_params, types_list, z_dim, y_dim, s_dim):
     
     return ELBO, loss_reconstruction, KL_z, KL_s
 
-def samples_generator(batch_data_list, X_list, miss_list, types_list, batch_size, z_dim, y_dim, y_dim_partition, s_dim, tau, normalization_params):
+#Single imputation
+def samples_generator(batch_data_list, X_list, miss_list, types_list, batch_size, z_dim, y_dim, y_dim_partition, s_dim, tau, tau2, normalization_params):
     
     samples_test = dict.fromkeys(['s','z','y','x'],[])
     test_params = dict()
@@ -91,9 +93,10 @@ def samples_generator(batch_data_list, X_list, miss_list, types_list, batch_size
     grouped_samples_y = VAE_functions.y_partition(samples_test['y'], types_list, y_dim_partition)
     
     #Compute the parameters h_y
-    theta = VAE_functions.theta_estimation_from_y(grouped_samples_y, types_list, miss_list, batch_size, reuse=True)
+#    theta = VAE_functions.theta_estimation_from_y(grouped_samples_y, types_list, miss_list, batch_size, reuse=True)
+    theta = VAE_functions.theta_estimation_from_ys(grouped_samples_y, samples_test['s'], types_list, miss_list, batch_size, reuse=True)
     
     #Compute loglik and output of the VAE
-    log_p_x, log_p_x_missing, samples_test['x'], test_params['x'] = VAE_functions.loglik_evaluation(batch_data_list, types_list, miss_list, theta, normalization_params, reuse=True)
+    log_p_x, log_p_x_missing, samples_test['x'], test_params['x'] = VAE_functions.loglik_evaluation(batch_data_list, types_list, miss_list, theta, tau2, normalization_params, reuse=True)
     
     return samples_test, test_params, log_p_x, log_p_x_missing

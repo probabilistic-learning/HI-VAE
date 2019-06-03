@@ -20,7 +20,7 @@ def HVAE_graph(model_name, types_file, batch_size, learning_rate=1e-3, z_dim=2, 
     
     #Load placeholders
     print('[*] Defining placeholders')
-    batch_data_list, batch_data_list_observed, miss_list, tau, types_list = VAE_functions.place_holder_types(types_file, batch_size)
+    batch_data_list, batch_data_list_observed, miss_list, tau, tau2, types_list = VAE_functions.place_holder_types(types_file, batch_size)
     
     #Batch normalization of the data
     X_list, normalization_params = VAE_functions.batch_normalization(batch_data_list_observed, types_list, miss_list)
@@ -37,7 +37,7 @@ def HVAE_graph(model_name, types_file, batch_size, learning_rate=1e-3, z_dim=2, 
     samples, q_params = model.encoder(X_list, miss_list, batch_size, z_dim, s_dim, tau)
     
     print('[*] Defining Decoder...')
-    theta, samples, p_params, log_p_x, log_p_x_missing = model.decoder(batch_data_list, miss_list, types_list, samples, q_params, normalization_params, batch_size, z_dim, y_dim_output, y_dim_partition)
+    theta, samples, p_params, log_p_x, log_p_x_missing = model.decoder(batch_data_list, miss_list, types_list, samples, q_params, normalization_params, batch_size, z_dim, y_dim_output, y_dim_partition, tau2)
 
     print('[*] Defining Cost function...')
     ELBO, loss_reconstruction, KL_z, KL_s = model.cost_function(log_p_x, p_params, q_params, types_list, z_dim, y_dim_output, s_dim)
@@ -45,13 +45,14 @@ def HVAE_graph(model_name, types_file, batch_size, learning_rate=1e-3, z_dim=2, 
     optim = tf.train.AdamOptimizer(learning_rate).minimize(-ELBO)
     
     #Generator function for testing purposes
-    samples_test, test_params, log_p_x_test, log_p_x_missing_test = model.samples_generator(batch_data_list, X_list, miss_list, types_list, batch_size, z_dim, y_dim_output, y_dim_partition, s_dim, tau, normalization_params)
+    samples_test, test_params, log_p_x_test, log_p_x_missing_test = model.samples_generator(batch_data_list, X_list, miss_list, types_list, batch_size, z_dim, y_dim_output, y_dim_partition, s_dim, tau, tau2, normalization_params)
     
     #Packing results
     tf_nodes = {'ground_batch' : batch_data_list,
                 'ground_batch_observed' : batch_data_list_observed,
                 'miss_list': miss_list,
                 'tau_GS': tau,
+                'tau_var': tau2,
                 'samples': samples,
                 'log_p_x': log_p_x,
                 'log_p_x_missing': log_p_x_missing,

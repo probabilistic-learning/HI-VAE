@@ -35,8 +35,9 @@ def place_holder_types(types_file, batch_size):
     
     #Placeholder for Gumbel-softmax parameter
     tau = tf.placeholder(tf.float32,shape=())
+    tau2 = tf.placeholder(tf.float32,shape=())
     
-    return batch_data_list, batch_data_list_observed, miss_list, tau, types_list
+    return batch_data_list, batch_data_list_observed, miss_list, tau, tau2, types_list
 
 def batch_normalization(batch_data_list, types_list, miss_list):
     
@@ -60,8 +61,9 @@ def batch_normalization(batch_data_list, types_list, miss_list):
         #When using log-normal
         elif types_list[i]['type'] == 'pos':
 #           #We transform the log of the data to a gaussian with mean 0 and std 1
-            observed_data_log = tf.log(1 + observed_data)
+            observed_data_log = tf.log(1.0 + observed_data)
             data_mean_log, data_var_log = tf.nn.moments(observed_data_log,0)
+            
             data_var_log = tf.clip_by_value(data_var_log,1e-6,1e20) #Avoid zero values
             aux_X = tf.nn.batch_normalization(observed_data_log,data_mean_log,data_var_log,offset=0.0,scale=1.0,variance_epsilon=1e-6)
             
@@ -76,7 +78,6 @@ def batch_normalization(batch_data_list, types_list, miss_list):
             normalized_data.append(tf.dynamic_stitch(condition_indices, [missing_data, aux_X]))
             normalization_parameters.append([0.0, 1.0])
             
-            
         else:
             #Don't normalize the categorical and ordinal variables
             normalized_data.append(d)
@@ -84,24 +85,46 @@ def batch_normalization(batch_data_list, types_list, miss_list):
     
     return normalized_data, normalization_parameters
 
+
 def s_proposal_multinomial(X, batch_size, s_dim, tau, reuse):
     
     #We propose a categorical distribution to create a GMM for the latent space z
     log_pi = tf.layers.dense(inputs=X, units=s_dim, activation=None,
                          kernel_initializer=tf.random_normal_initializer(stddev=0.05), name='layer_1_' + 'enc_s', reuse=reuse)
     
-    #Gumbel-softmax trick
-    U = -tf.log(-tf.log(tf.random_uniform([batch_size,s_dim])))
-    samples_s = tf.nn.softmax((log_pi + U)/tau)
     
-    return samples_s, log_pi
+    #Gumbel-softmax trick
+    log_pi_aux = tf.log(tf.clip_by_value(tf.nn.softmax(log_pi),1e-6,1))
+    U = -tf.log(-tf.log(tf.random_uniform([batch_size,s_dim])))
+    samples_s = tf.nn.softmax((log_pi_aux + U)/tau)
+    
+    return samples_s, log_pi_aux
 
 def z_proposal_GMM(X, samples_s, batch_size, z_dim, reuse):
+    
+#    X_in = tf.layers.dense(inputs=X, units=100, activation=tf.nn.tanh,
+#                         kernel_initializer=tf.random_normal_initializer(stddev=0.05), name='layer_0_' + 'mean_enc_z', reuse=reuse)
     
     #We propose a GMM for z
     mean_qz = tf.layers.dense(inputs=tf.concat([X,samples_s],1), units=z_dim, activation=None,
                          kernel_initializer=tf.random_normal_initializer(stddev=0.05), name='layer_1_' + 'mean_enc_z', reuse=reuse)
     log_var_qz = tf.layers.dense(inputs=tf.concat([X,samples_s],1), units=z_dim, activation=None,
+                         kernel_initializer=tf.random_normal_initializer(stddev=0.05), name='layer_1_' + 'logvar_enc_z', reuse=reuse)
+    
+    # Avoid numerical problems
+    log_var_qz = tf.clip_by_value(log_var_qz,-15.0,15.0)
+    # Rep-trick
+    eps = tf.random_normal((batch_size, z_dim), 0, 1, dtype=tf.float32)
+    samples_z = mean_qz+tf.multiply(tf.exp(log_var_qz/2), eps)
+    
+    return samples_z, [mean_qz, log_var_qz]
+
+def z_proposal_Normal(X, batch_size, z_dim, reuse):
+    
+    #We propose a GMM for z
+    mean_qz = tf.layers.dense(inputs=X, units=z_dim, activation=None,
+                         kernel_initializer=tf.random_normal_initializer(stddev=0.05), name='layer_1_' + 'mean_enc_z', reuse=reuse)
+    log_var_qz = tf.layers.dense(inputs=X, units=z_dim, activation=None,
                          kernel_initializer=tf.random_normal_initializer(stddev=0.05), name='layer_1_' + 'logvar_enc_z', reuse=reuse)
     
     # Avoid numerical problems
@@ -183,6 +206,38 @@ def y_partition(samples_y, types_list, y_dim_partition):
     
     return grouped_samples_y
 
+def theta_estimation_from_z(samples_z, types_list, miss_list, batch_size, reuse):
+    
+    theta = []
+    
+    #Independet yd -> Compute p(xd|yd)
+    for i,d in enumerate(types_list):
+        
+        #Partition the data in missing data (0) and observed data (1)
+        missing_y, observed_y = tf.dynamic_partition(samples_z, miss_list[:,i], num_partitions=2)
+        condition_indices = tf.dynamic_partition(tf.range(tf.shape(samples_z)[0]), miss_list[:,i], num_partitions=2)
+        nObs = tf.shape(observed_y)[0]
+        
+        #Different layer models for each type of variable
+        if types_list[i]['type'] == 'real':
+            params = theta_real(observed_y, missing_y, condition_indices, types_list, nObs, batch_size, i, reuse)
+        
+        elif types_list[i]['type'] == 'pos':
+            params = theta_pos(observed_y, missing_y, condition_indices, types_list, nObs, batch_size, i, reuse)
+            
+        elif types_list[i]['type'] == 'count':
+            params = theta_count(observed_y, missing_y, condition_indices, types_list, nObs, batch_size, i, reuse)
+        
+        elif types_list[i]['type'] == 'cat':
+            params = theta_cat(observed_y, missing_y, condition_indices, types_list, nObs, batch_size, i, reuse)
+            
+        elif types_list[i]['type'] == 'ordinal':
+            params = theta_ordinal(observed_y, missing_y, condition_indices, types_list, nObs, batch_size, i, reuse)
+            
+        theta.append(params)
+            
+    return theta
+
 def theta_estimation_from_y(samples_y, types_list, miss_list, batch_size, reuse):
     
     theta = []
@@ -215,35 +270,113 @@ def theta_estimation_from_y(samples_y, types_list, miss_list, batch_size, reuse)
             
     return theta
 
+def theta_estimation_from_ys(samples_y, samples_s, types_list, miss_list, batch_size, reuse):
+    
+    theta = []
+    
+    #Independet yd -> Compute p(xd|yd)
+    for i,d in enumerate(samples_y):
+        
+        #Partition the data in missing data (0) and observed data (1)
+        missing_y, observed_y = tf.dynamic_partition(d, miss_list[:,i], num_partitions=2)
+        missing_s, observed_s = tf.dynamic_partition(samples_s, miss_list[:,i], num_partitions=2)
+        condition_indices = tf.dynamic_partition(tf.range(tf.shape(d)[0]), miss_list[:,i], num_partitions=2)
+        nObs = tf.shape(observed_y)[0]
+        
+        #Different layer models for each type of variable
+        if types_list[i]['type'] == 'real':
+#            params = theta_real(observed_y, missing_y, condition_indices, types_list, nObs, batch_size, i, reuse)
+            params = theta_real_s(observed_y, missing_y, observed_s, missing_s, condition_indices, types_list, nObs, batch_size, i, reuse)
+        
+        elif types_list[i]['type'] == 'pos':
+#            params = theta_pos(observed_y, missing_y, condition_indices, types_list, nObs, batch_size, i, reuse)
+            params = theta_pos_s(observed_y, missing_y, observed_s, missing_s, condition_indices, types_list, nObs, batch_size, i, reuse)
+            
+        elif types_list[i]['type'] == 'count':
+#            params = theta_count(observed_y, missing_y, condition_indices, types_list, nObs, batch_size, i, reuse)
+            params = theta_count_s(observed_y, missing_y, observed_s, missing_s, condition_indices, types_list, nObs, batch_size, i, reuse)
+        
+        elif types_list[i]['type'] == 'cat':
+#            params = theta_cat(observed_y, missing_y, condition_indices, types_list, nObs, batch_size, i, reuse)
+            params = theta_cat_s(observed_y, missing_y, observed_s, missing_s, condition_indices, types_list, nObs, batch_size, i, reuse)
+            
+        elif types_list[i]['type'] == 'ordinal':
+#            params = theta_ordinal(observed_y, missing_y, condition_indices, types_list, nObs, batch_size, i, reuse)
+            params = theta_ordinal_s(observed_y, missing_y, observed_s, missing_s, condition_indices, types_list, nObs, batch_size, i, reuse)
+            
+        theta.append(params)
+            
+    return theta
+
 def theta_real(observed_y, missing_y, condition_indices, types_list, nObs, batch_size, i, reuse):
     
     #Mean layer
-    h2_mean = observed_data_layer(observed_y, missing_y, condition_indices, output_dim=types_list[i]['dim'], name='layer_h2' + str(i), reuse=reuse)
+    h2_mean = observed_data_layer(observed_y, missing_y, condition_indices, output_dim=types_list[i]['dim'], name='layer_h2' + str(i), reuse=reuse, bias=True)
+
     #Sigma Layer
-    h2_sigma = observed_data_layer(observed_y, missing_y, condition_indices, output_dim=types_list[i]['dim'], name='layer_h2_sigma' + str(i), reuse=reuse)
+    h2_sigma = observed_data_layer(observed_y, missing_y, condition_indices, output_dim=types_list[i]['dim'], name='layer_h2_sigma' + str(i), reuse=reuse, bias=True)
     
     return [h2_mean, h2_sigma]
+
+def theta_real_s(observed_y, missing_y, observed_s, missing_s, condition_indices, types_list, nObs, batch_size, i, reuse):
+    
+    #Mean layer    
+    h2_mean = observed_data_layer(tf.concat([observed_y,observed_s],1), tf.concat([missing_y,missing_s],1), condition_indices, output_dim=types_list[i]['dim'], name='layer_h2' + str(i), reuse=reuse, bias=False)
+    
+    #Sigma Layer    
+    h2_sigma = observed_data_layer(observed_s, missing_s, condition_indices, output_dim=types_list[i]['dim'], name='layer_h2_sigma' + str(i), reuse=reuse, bias=False)
+    
+    return [h2_mean, h2_sigma]
+
 
 def theta_pos(observed_y, missing_y, condition_indices, types_list, nObs, batch_size, i, reuse):
     
     #Mean layer
-    h2_mean = observed_data_layer(observed_y, missing_y, condition_indices, output_dim=types_list[i]['dim'], name='layer_h2' + str(i), reuse=reuse)
+    h2_mean = observed_data_layer(observed_y, missing_y, condition_indices, output_dim=types_list[i]['dim'], name='layer_h2' + str(i), reuse=reuse, bias=True)
+    
     #Sigma Layer
-    h2_sigma = observed_data_layer(observed_y, missing_y, condition_indices, output_dim=types_list[i]['dim'], name='layer_h2_sigma' + str(i), reuse=reuse)
+    h2_sigma = observed_data_layer(observed_y, missing_y, condition_indices, output_dim=types_list[i]['dim'], name='layer_h2_sigma' + str(i), reuse=reuse, bias=True)
+    
+    return [h2_mean, h2_sigma]
+
+def theta_pos_s(observed_y, missing_y, observed_s, missing_s, condition_indices, types_list, nObs, batch_size, i, reuse):
+    
+    #Mean layer
+    h2_mean = observed_data_layer(tf.concat([observed_y,observed_s],1), tf.concat([missing_y,missing_s],1), condition_indices, output_dim=types_list[i]['dim'], name='layer_h2' + str(i), reuse=reuse, bias=False)
+    
+    #Sigma Layer
+    h2_sigma = observed_data_layer(observed_s, missing_s, condition_indices, output_dim=types_list[i]['dim'], name='layer_h2_sigma' + str(i), reuse=reuse, bias=False)
     
     return [h2_mean, h2_sigma]
 
 def theta_count(observed_y, missing_y, condition_indices, types_list, nObs, batch_size, i, reuse):
     
     #Lambda Layer
-    h2_lambda = observed_data_layer(observed_y, missing_y, condition_indices, output_dim=types_list[i]['dim'], name='layer_h2' + str(i), reuse=reuse)
+    h2_lambda = observed_data_layer(observed_y, missing_y, condition_indices, output_dim=types_list[i]['dim'], name='layer_h2' + str(i), reuse=reuse, bias=True)
+
+    return h2_lambda
+
+def theta_count_s(observed_y, missing_y, observed_s, missing_s, condition_indices, types_list, nObs, batch_size, i, reuse):
+    
+    #Lambda Layer    
+    h2_lambda = observed_data_layer(tf.concat([observed_y,observed_s],1), tf.concat([missing_y,missing_s],1), condition_indices, output_dim=types_list[i]['dim'], name='layer_h2' + str(i), reuse=reuse, bias=False)
     
     return h2_lambda
 
 def theta_cat(observed_y, missing_y, condition_indices, types_list, nObs, batch_size, i, reuse):
     
     #Log pi layer, with zeros in the first value to avoid the identificability problem
-    h2_log_pi_partial = observed_data_layer(observed_y, missing_y, condition_indices, output_dim=int(types_list[i]['dim'])-1, name='layer_h2' + str(i), reuse=reuse)
+    h2_log_pi_partial = observed_data_layer(observed_y, missing_y, condition_indices, output_dim=int(types_list[i]['dim'])-1, name='layer_h2' + str(i), reuse=reuse, bias=True)
+    
+    h2_log_pi = tf.concat([tf.zeros([batch_size,1]), h2_log_pi_partial],1)
+    
+    return h2_log_pi
+
+def theta_cat_s(observed_y, missing_y, observed_s, missing_s, condition_indices, types_list, nObs, batch_size, i, reuse):
+    
+    #Log pi layer, with zeros in the first value to avoid the identificability problem    
+    h2_log_pi_partial = observed_data_layer(tf.concat([observed_y,observed_s],1), tf.concat([missing_y,missing_s],1), condition_indices, output_dim=int(types_list[i]['dim'])-1, name='layer_h2' + str(i), reuse=reuse, bias=False)
+    
     h2_log_pi = tf.concat([tf.zeros([batch_size,1]), h2_log_pi_partial],1)
     
     return h2_log_pi
@@ -251,26 +384,37 @@ def theta_cat(observed_y, missing_y, condition_indices, types_list, nObs, batch_
 def theta_ordinal(observed_y, missing_y, condition_indices, types_list, nObs, batch_size, i, reuse):
     
     #Theta layer, Dimension of ordinal - 1
-    h2_theta = observed_data_layer(observed_y, missing_y, condition_indices, output_dim=int(types_list[i]['dim'])-1, name='layer_h2' + str(i), reuse=reuse)
+    h2_theta = observed_data_layer(observed_y, missing_y, condition_indices, output_dim=int(types_list[i]['dim'])-1, name='layer_h2' + str(i), reuse=reuse, bias=True)
+    
     #Mean layer, a single value
-    h2_mean = observed_data_layer(observed_y, missing_y, condition_indices, output_dim=1, name='layer_h2_sigma' + str(i), reuse=reuse)
+    h2_mean = observed_data_layer(observed_y, missing_y, condition_indices, output_dim=1, name='layer_h2_sigma' + str(i), reuse=reuse, bias=True)
     
     return [h2_theta, h2_mean]
 
-def observed_data_layer(observed_data, missing_data, condition_indices, output_dim, name, reuse):
+def theta_ordinal_s(observed_y, missing_y, observed_s, missing_s, condition_indices, types_list, nObs, batch_size, i, reuse):
+    
+    #Theta layer, Dimension of ordinal - 1
+    h2_theta = observed_data_layer(observed_s, missing_s, condition_indices, output_dim=int(types_list[i]['dim'])-1, name='layer_h2' + str(i), reuse=reuse, bias=False)
+    
+    #Mean layer, a single value
+    h2_mean = observed_data_layer(tf.concat([observed_y,observed_s],1), tf.concat([missing_y,missing_s],1), condition_indices, output_dim=1, name='layer_h2_sigma' + str(i), reuse=reuse, bias=False)
+    
+    return [h2_theta, h2_mean]
+
+def observed_data_layer(observed_data, missing_data, condition_indices, output_dim, name, reuse, bias):
     
     #Train a layer with the observed data and reuse it for the missing data
     obs_output = tf.layers.dense(inputs=observed_data, units=output_dim, activation=None,
-                         kernel_initializer=tf.random_normal_initializer(stddev=0.05),name=name,reuse=reuse,trainable=True)
+                         kernel_initializer=tf.random_normal_initializer(stddev=0.05),name=name,reuse=reuse,trainable=True,use_bias=bias)
     miss_output = tf.layers.dense(inputs=missing_data, units=output_dim, activation=None,
-                     kernel_initializer=tf.random_normal_initializer(stddev=0.05),name=name,reuse=True,trainable=False)
+                     kernel_initializer=tf.random_normal_initializer(stddev=0.05),name=name,reuse=True,trainable=False,use_bias=bias)
     #Join back the data
     output = tf.dynamic_stitch(condition_indices, [miss_output,obs_output])
     
     return output
 
 
-def loglik_evaluation(batch_data_list, types_list, miss_list, theta, normalization_params, reuse):
+def loglik_evaluation(batch_data_list, types_list, miss_list, theta, tau2, normalization_params, reuse):
     
     log_p_x = []
     log_p_x_missing = []
@@ -283,7 +427,7 @@ def loglik_evaluation(batch_data_list, types_list, miss_list, theta, normalizati
         # Select the likelihood for the types of variables
         loglik_function = getattr(loglik_models_missing_normalize, 'loglik_' + types_list[i]['type'])
         
-        out = loglik_function([d,miss_list[:,i]], types_list[i], theta[i], normalization_params[i],
+        out = loglik_function([d,miss_list[:,i]], types_list[i], theta[i], normalization_params[i], tau2,
                                   kernel_initializer=tf.random_normal_initializer(stddev=0.05), name='layer_1_mean_dec_x' + str(i), reuse=reuse)
             
         log_p_x.append(out['log_p_x'])

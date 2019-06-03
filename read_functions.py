@@ -11,6 +11,7 @@ Functions needed to read the data from different databases
 import csv
 import numpy as np
 import os
+import scipy.io as sc
 from sklearn.metrics import mean_squared_error
 
 def read_data(data_file, types_file, miss_file, true_miss_file):
@@ -76,6 +77,15 @@ def read_data(data_file, types_file, miss_file, true_miss_file):
             aux[np.arange(np.shape(data)[0]),1+cat_data] = -1
             aux = np.cumsum(aux,1)
             data_complete.append(aux[:,:-1])
+            
+        elif types_dict[i]['type'] == 'count':
+            if np.min(data[:,i]) == 0:
+                aux = data[:,i] + 1
+                data_complete.append(np.transpose([aux]))
+            else:
+                data_complete.append(np.transpose([data[:,i]]))
+            
+            
             
         else:
             data_complete.append(np.transpose([data[:,i]]))
@@ -212,7 +222,8 @@ def q_distribution_params_concatenation(params,z_dim,s_dim):
             out_dict[k].append(batch[k])
             
     out_dict['z'] = np.concatenate(out_dict['z'],1)
-    out_dict['s'] = np.concatenate(out_dict['s'],0)
+    if 's' in out_dict:
+        out_dict['s'] = np.concatenate(out_dict['s'],0)
         
     return out_dict
 
@@ -229,8 +240,8 @@ def statistics(loglik_params,types_dict):
         #Only for log-normal
         elif types_dict[d]['type'] == 'pos':
             #Log-normal distribution (mean, sigma)
-            loglik_mean.append(np.exp(attrib[0] + 0.5*attrib[1]) - 1.0)
-            loglik_mode.append(np.exp(attrib[0] - attrib[1]) - 1.0)
+            loglik_mean.append(np.maximum(np.exp(attrib[0] + 0.5*attrib[1]) - 1.0,0.0))
+            loglik_mode.append(np.maximum(np.exp(attrib[0] - attrib[1]) - 1.0,0.0))
         elif types_dict[d]['type'] == 'count':
             #Poisson distribution (lambda)
             loglik_mean.append(attrib)
@@ -269,8 +280,9 @@ def error_computation(x_train, x_hat, types_dict, miss_mask):
         #Normalized root mean square error
         else:
             ind_end = ind_ini + int(types_dict[dd]['dim'])
-            norm_term = np.max(x_train[miss_mask[:,dd]==1,dd]) - np.min(x_train[miss_mask[:,dd]==1,dd])
+            norm_term = np.max(x_train[:,dd]) - np.min(x_train[:,dd])
             error_observed.append(np.sqrt(mean_squared_error(x_train[miss_mask[:,dd]==1,ind_ini:ind_end],x_hat[miss_mask[:,dd]==1,ind_ini:ind_end]))/norm_term)
+            
             if np.sum(miss_mask[:,dd]==0,0) == 0:
                 error_missing.append(0)
             else:
