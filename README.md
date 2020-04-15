@@ -28,3 +28,23 @@ You can add your own datasets as long as they follow this structure.
 ## Contact
 
 **Alfredo Nazabal**: anazabal@turing.ac.uk
+
+
+
+# Code Pre-requisites
+
+First,
+```console
+$ git clone https://github.com/amirhk/mace.git
+$ pip install virtualenv
+$ cd mace
+$ virtualenv -p python3 _venv
+$ source _venv/bin/activate
+$ pip install -r pip_requirements.txt
+$ chmod +x script_HIVAE.sh
+```
+
+Then, run
+```console
+$ ./script_HIVAE.sh
+```
