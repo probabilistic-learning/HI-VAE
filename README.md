@@ -35,9 +35,9 @@ You can add your own datasets as long as they follow this structure.
 
 First,
 ```console
-$ git clone https://github.com/amirhk/mace.git
+$ git clone https://github.com/probabilistic-learning/HI-VAE.git
 $ pip install virtualenv
-$ cd mace
+$ cd HI-VAE
 $ virtualenv -p python3 _venv
 $ source _venv/bin/activate
 $ pip install -r pip_requirements.txt
